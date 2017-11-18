@@ -1,97 +1,97 @@
-; DON'T OPEN THIS FILE WITH NOTEPAD.  If you don't have a preferred text editor, use notepad++ or any other modern text editor.
-;
-; If you edit example_options.ini, Save-As options.ini
-;
-; This is the main configuration file for MusicBot.  You will need to edit this file when you setup the bot.
-; The bot must be restarted for edits to take effect, but a reload command will be created in the future.
-; Currently the bot does not overwrite any settings, but this may change in a future update.
+const { Client } = require('discord.js');
+const yt = require('ytdl-core');
+const tokens = require('./tokens.json');
+const client = new Client();
 
+let queue = {};
 
-; HOW TO GET VARIOUS IDS:
-; http://i.imgur.com/GhKpBMQ.gif
-; Enable developer mode (options, settings, appearance), right click the object you want the id of, and click Copy ID
-; This works for basically everything you would want the id of (channels and users).  For roles you have to right click a role mention.
+const commands = {
+	'play': (msg) => {
+		if (queue[msg.guild.id] === undefined) return msg.channel.sendMessage(`Add some songs to the queue first with ${tokens.prefix}add`);
+		if (!msg.guild.voiceConnection) return commands.join(msg).then(() => commands.play(msg));
+		if (queue[msg.guild.id].playing) return msg.channel.sendMessage('Already Playing');
+		let dispatcher;
+		queue[msg.guild.id].playing = true;
 
+		console.log(queue);
+		(function play(song) {
+			console.log(song);
+			if (song === undefined) return msg.channel.sendMessage('Queue is empty').then(() => {
+				queue[msg.guild.id].playing = false;
+				msg.member.voiceChannel.leave();
+			});
+			msg.channel.sendMessage(`Playing: **${song.title}** as requested by: **${song.requester}**`);
+			dispatcher = msg.guild.voiceConnection.playStream(yt(song.url, { audioonly: true }), { passes : tokens.passes });
+			let collector = msg.channel.createCollector(m => m);
+			collector.on('message', m => {
+				if (m.content.startsWith(tokens.prefix + 'pause')) {
+					msg.channel.sendMessage('paused').then(() => {dispatcher.pause();});
+				} else if (m.content.startsWith(tokens.prefix + 'resume')){
+					msg.channel.sendMessage('resumed').then(() => {dispatcher.resume();});
+				} else if (m.content.startsWith(tokens.prefix + 'skip')){
+					msg.channel.sendMessage('skipped').then(() => {dispatcher.end();});
+				} else if (m.content.startsWith('volume+')){
+					if (Math.round(dispatcher.volume*50) >= 100) return msg.channel.sendMessage(`Volume: ${Math.round(dispatcher.volume*50)}%`);
+					dispatcher.setVolume(Math.min((dispatcher.volume*50 + (2*(m.content.split('+').length-1)))/50,2));
+					msg.channel.sendMessage(`Volume: ${Math.round(dispatcher.volume*50)}%`);
+				} else if (m.content.startsWith('volume-')){
+					if (Math.round(dispatcher.volume*50) <= 0) return msg.channel.sendMessage(`Volume: ${Math.round(dispatcher.volume*50)}%`);
+					dispatcher.setVolume(Math.max((dispatcher.volume*50 - (2*(m.content.split('-').length-1)))/50,0));
+					msg.channel.sendMessage(`Volume: ${Math.round(dispatcher.volume*50)}%`);
+				} else if (m.content.startsWith(tokens.prefix + 'time')){
+					msg.channel.sendMessage(`time: ${Math.floor(dispatcher.time / 60000)}:${Math.floor((dispatcher.time % 60000)/1000) <10 ? '0'+Math.floor((dispatcher.time % 60000)/1000) : Math.floor((dispatcher.time % 60000)/1000)}`);
+				}
+			});
+			dispatcher.on('end', () => {
+				collector.stop();
+				play(queue[msg.guild.id].songs.shift());
+			});
+			dispatcher.on('error', (err) => {
+				return msg.channel.sendMessage('error: ' + err).then(() => {
+					collector.stop();
+					play(queue[msg.guild.id].songs.shift());
+				});
+			});
+		})(queue[msg.guild.id].songs.shift());
+	},
+	'join': (msg) => {
+		return new Promise((resolve, reject) => {
+			const voiceChannel = msg.member.voiceChannel;
+			if (!voiceChannel || voiceChannel.type !== 'voice') return msg.reply('I couldn\'t connect to your voice channel...');
+			voiceChannel.join().then(connection => resolve(connection)).catch(err => reject(err));
+		});
+	},
+	'add': (msg) => {
+		let url = msg.content.split(' ')[1];
+		if (url == '' || url === undefined) return msg.channel.sendMessage(`You must add a YouTube video url, or id after ${tokens.prefix}add`);
+		yt.getInfo(url, (err, info) => {
+			if(err) return msg.channel.sendMessage('Invalid YouTube Link: ' + err);
+			if (!queue.hasOwnProperty(msg.guild.id)) queue[msg.guild.id] = {}, queue[msg.guild.id].playing = false, queue[msg.guild.id].songs = [];
+			queue[msg.guild.id].songs.push({url: url, title: info.title, requester: msg.author.username});
+			msg.channel.sendMessage(`added **${info.title}** to the queue`);
+		});
+	},
+	'queue': (msg) => {
+		if (queue[msg.guild.id] === undefined) return msg.channel.sendMessage(`Add some songs to the queue first with ${tokens.prefix}add`);
+		let tosend = [];
+		queue[msg.guild.id].songs.forEach((song, i) => { tosend.push(`${i+1}. ${song.title} - Requested by: ${song.requester}`);});
+		msg.channel.sendMessage(`__**${msg.guild.name}'s Music Queue:**__ Currently **${tosend.length}** songs queued ${(tosend.length > 15 ? '*[Only next 15 shown]*' : '')}\n\`\`\`${tosend.slice(0,15).join('\n')}\`\`\``);
+	},
+	'help': (msg) => {
+		let tosend = ['```xl', tokens.prefix + 'join : "Join Voice channel of msg sender"',	tokens.prefix + 'add : "Add a valid youtube link to the queue"', tokens.prefix + 'queue : "Shows the current queue, up to 15 songs shown."', tokens.prefix + 'play : "Play the music queue if already joined to a voice channel"', '', 'the following commands only function while the play command is running:'.toUpperCase(), tokens.prefix + 'pause : "pauses the music"',	tokens.prefix + 'resume : "resumes the music"', tokens.prefix + 'skip : "skips the playing song"', tokens.prefix + 'time : "Shows the playtime of the song."',	'volume+(+++) : "increases volume by 2%/+"',	'volume-(---) : "decreases volume by 2%/-"',	'```'];
+		msg.channel.sendMessage(tosend.join('\n'));
+	},
+	'reboot': (msg) => {
+		if (msg.author.id == tokens.adminID) process.exit(); //Requires a node module like Forever to work.
+	}
+};
 
-[Credentials]
-; Put your token here.  Not "secret".  The secret is not the token.
-Token = MzM1MjY0NTk3ODY5MTk5Mzcx.DOF4Ag.I0F5KHPBIaqUpRBg9tZJyCnbTmU
-; If you want to use a normal user account instead of a bot account, use these lines instead.
-; Comment the token line and uncomment the Email/Password lines.
-;Email = bot_discord@email
-;Password = bot_discord_password
+client.on('ready', () => {
+	console.log('ready!');
+});
 
-[Permissions]
-; This number should be your id.  It gives you full permissions.  You do not put the bot's id here.  That's silly.
-; If you don't know how to get this, scroll up a bit and read the part that says "HOW TO GET VARIOUS IDS"
-; If you can't do that for some reason, join the help server (invite in the readme) and type this in chat: !id
-; If you still don't understand, watch this https://streamable.com/4w8e and may your respective deity have mercy on your soul.
-; I don't want any more "how do I get the OwnerID" questions.
-OwnerID = 245356837136760832
-
-[Chat]
-; Change this if you don't want commands to trigger another bot
-; Example:
-;	CommandPrefix = *
-; This means the commands you use in chat are *play, *skip, etc.  This explanation exists because it seems no one knows what "prefix" means.
-; You do not list commands here.  You do not put "CommandPrefix = *play *queue *np *skip *clear..." etc.  R e a d i n g   c o m p r e h e n s i o n.
-CommandPrefix = ?
-
-; Restrict the bot to only listen to certain text channels.  Uncomment (remove the ; at the start of the line) and add channel IDs to enable.
-; An id looks like this number: 41771983423143930
-; To get a channel id, enable Developer Mode in discord (settings, appearance), right click a channel, and click Copy ID.
-; Example: BindToChannels = 41000000000000005 41000000000000007
-; (Don't use these ids, they won't work)
-; This next line is the one you uncomment to use the option:
-;
-;BindToChannels =
-;
-
-; Join a channel on startup.  Multiple channels can be added for multiple servers. Remember, use IDs, not names.
-; If both this option and AutoSummon are enabled, this option takes priority.
-;
-;AutojoinChannels =
-;
-
-[MusicBot]
-; The starting volume of the bot.  You can use any value from 0.01 to 1.0 but 0.15 is probably fine
-DefaultVolume = 0.50
-
-; Only allow whitelisted users to use commands
-; Deprecated in favor of permissions
-WhiteListCheck = yes
-
-; Skips required to skip a song.  Whichever is lower will be used.
-; Skip ratio refers to the percent of non-deafened, non-owner users
-; in the voice channel needed to skip a song.
-SkipsRequired = 4
-SkipRatio = 0.5
-
-; If no, delete videos after they've played, if the video
-; isn't still in the queue, to avoid redownloading it.
-SaveVideos = yes
-
-; Mentions the user who queued a song when the song plays.
-NowPlayingMentions = no
-
-; On start up, if the owner is in a voice channel, join that channel.
-AutoSummon = yes
-
-; Play random songs when nothing is queued.
-UseAutoPlaylist = yes
-
-; When no one else is in the voice channel, pause the music, and resume when someone joins again.
-AutoPause = yes
-
-; Automatically delete messages the bot sends after some time.
-DeleteMessages = no
-
-; Delete the invoking message when DeleteMessages is enabled.  Does nothing when DeleteMessages is disabled.
-; Note the bot must have Manage Messages permission in the channel to delete other messages.
-DeleteInvoking = no
-
-; Prints extra output in the console and some errors to chat.
-; This option is a work in progress, don't expect much.  You might as well just leave it on for now.
-DebugMode = no
-
-AutojoinChannels = 372477279944835103
+client.on('message', msg => {
+	if (!msg.content.startsWith(tokens.prefix)) return;
+	if (commands.hasOwnProperty(msg.content.toLowerCase().slice(tokens.prefix.length).split(' ')[0])) commands[msg.content.toLowerCase().slice(tokens.prefix.length).split(' ')[0]](msg);
+});
+client.login(tokens.d_token);
